@@ -603,8 +603,8 @@ int pmm_initialize(struct memory_map_entry* entries, uint32_t entry_count, uintp
     vga_print(" | Top: ");
     vga_print_uint_color(pmm_state.p_top, 16, -1, VGA_COLOR_LIGHT_MAGENTA);
     vga_print("\n");
-    pmm_print_memory();
-    pmm_print_freelists();
+    //pmm_print_memory();
+    //pmm_print_freelists();
     return 0;
 }
 
@@ -703,4 +703,12 @@ uintptr_t pmm_p_ptr(void* v_ptr) {
 void* pmm_v_ptr(uintptr_t p_ptr) {
     if (p_ptr == 0) return NULL;
     return (void*)(pmm_state.mirror_base|(uint64_t)p_ptr);
+}
+
+void* pmm_allocate_page() {
+    return pmm_allocate_block(0);
+}
+
+void pmm_free_page(void* page) {
+    return pmm_free_block(page);
 }

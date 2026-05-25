@@ -1,5 +1,5 @@
-#ifndef KERNEL64_PAGING_H
-#define KERNEL64_PAGING_H
+#ifndef BOOT32_PAGING_H
+#define BOOT32_PAGING_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -14,9 +14,9 @@ enum PAGE_SIZE {
 
 enum PAGING_FREE_DEPTH {
     /* Frees PT in PDE */
-    PAGING_FREE_PT_DEPTH = 0,
+    PAGING_FREE_PDE_DEPTH = 0,
     /* Frees PD in PDPTE */
-    PAGING_FREE_PD_DEPTH = 1
+    PAGING_FREE_PDPTE_DEPTH = 1
 };
 
 /* Aligns an address by rounding up to 4K boundary */
@@ -57,15 +57,10 @@ struct paging_ops {
     void (*free_page)(void*);
     uintptr_t (*p_ptr)(void*);
     void* (*v_ptr)(uintptr_t);
-
-    bool cleanup_enabled;
-    void* (*allocate_block)(uint8_t);
-    void (*free_block)(void*);
 };
 
 /* Initialize/Unintialize page allocator functions */
-int paging_initialize_allocator(struct paging_ops ops);
-void paging_uninitialize_allocator(); 
+void paging_initialize_allocator(struct paging_ops ops);
 /* Functions to work with PML4 (top level map entry) */
 volatile void* paging_new_pml4();
 void paging_free_pml4(volatile void* pml4);

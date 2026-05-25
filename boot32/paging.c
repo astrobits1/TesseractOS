@@ -1,11 +1,8 @@
-#include <kernel64/memory/paging.h>
+#include <boot32/paging.h>
 #include <common/drivers/vga/vga.h>
-#include <libk/hashtb.h>
 
 struct paging_pvt {
     struct paging_ops ops;
-    bool initialized_refcount_map;
-    struct hashtb refcount_map;
     volatile void* pml4;
 };
 
@@ -15,61 +12,9 @@ struct paging_pvt paging_state = {
         .free_page = NULL,
         .p_ptr = NULL,
         .v_ptr = NULL,
-
-        .cleanup_enabled = false,
-        .allocate_block = NULL,
-        .free_block = NULL
     },
-
-    .initialized_refcount_map = false,
     .pml4 = NULL
 };
-
-/* Refcount functions that deal with counting and tracking of maps
- * allocated by the paging API in the hashtable. This has to be explicitly enabled
- * in the ops when initializing */
-
-/* Create/Destroy refcount entry for map */
-static inline void paging_refcount_create(uintptr_t p_map) { 
-    hashtb_insert(&paging_state.refcount_map, p_map>>4, 0);
-}
-
-static inline void paging_refcount_destroy(uintptr_t p_map) {
-    hashtb_remove(&paging_state.refcount_map, p_map>>4);
-}
-
-/* Increment/Decrement refcount entry for map */
-static void paging_refcount_increment(uintptr_t p_map) {
-    uint64_t refs;
-    int s = hashtb_read(&paging_state.refcount_map, p_map>>4, &refs);
-    if (s)
-        return;
-
-    hashtb_insert(&paging_state.refcount_map, p_map>>4, refs+1);
-}
-
-static void paging_refcount_decrement(uintptr_t p_map) {
-    uint64_t refs;
-    int s = hashtb_read(&paging_state.refcount_map, p_map>>4, &refs);
-    if (s)
-        return;
-
-    hashtb_insert(&paging_state.refcount_map, p_map>>4, refs-1);
-}
-
-/* Check if a map is being referenced by any direct sub maps */
-static bool paging_refcount_check_map_empty(uintptr_t p_map) {
-    uint64_t refs;
-    int s = hashtb_read(&paging_state.refcount_map, p_map>>4, &refs);
-    if (s)
-        return false;
-
-    /* No linkage exists */
-    if (refs == 0)
-        return true;
-    else
-        return false;
-}
 
 /* Initialize map to unmapped by default, (P bit 0) */
 static void paging_initialize_map(volatile uint8_t* map) {
@@ -136,106 +81,35 @@ static void paging_free_map(volatile void* map) {
  * 1. We have gone 'depth' steps deep,
  * 2. or, when we have encountered an entry with PS=1 */
 static void paging_free_map_recursive(volatile uint8_t* map, int depth) {
-    if (depth > 0) {
-        for (uint16_t i=0; i<MAP_ENTRY_COUNT; i++) {
-            if (!paging_check_map_entry_present(map, i)) continue;
+    for (uint16_t i=0; i<MAP_ENTRY_COUNT; i++) {
+        if (!paging_check_map_entry_present(map, i)) continue;
 
-            uint8_t PS;
-            volatile void* addr = (volatile void*)paging_state.ops.v_ptr(paging_read_map_entry(map, i, &PS));
-            if (PS == 1) continue;
+        uint8_t PS;
+        volatile void* addr = (volatile void*)paging_state.ops.v_ptr(paging_read_map_entry(map, i, &PS));
+        if (PS == 1) continue;
 
-            /* We have a nested map(s) which need to be freed */
-            paging_free_map_recursive(addr, depth-1); 
-        }
+        /* We have a nested map(s) which need to be freed */
+        if (depth > 0)
+            paging_free_map_recursive(addr, depth-1);
+
+        paging_free_map(addr);
     }
-
-    /* If refcount system is enabled, destroy its entry in the hashmap
-     * at free */
-    if (paging_state.initialized_refcount_map) {
-        paging_refcount_destroy(paging_state.ops.p_ptr((void*)map));
-    }
-    paging_free_map(map);
 }
 
-/* Create a new map and use refcount system if enabled */
-static volatile void* paging_create_map_entry(volatile void* map, bool inc_refcount) {
-    volatile void* submap = paging_state.ops.allocate_page();    
+/* Create a new map */
+static volatile void* paging_create_map_entry() {
+    volatile void* submap = paging_state.ops.allocate_page();
     if (submap == NULL) 
         return NULL;
-    
     paging_initialize_map(submap);
-    
-    if (paging_state.initialized_refcount_map) {
-        paging_refcount_create(paging_state.ops.p_ptr((void*)submap)); 
-
-        if (inc_refcount)
-            paging_refcount_increment(paging_state.ops.p_ptr((void*)map));
-    }
 
     return submap;
 }
 
-/* Deletes a map entry using the refcount system if cleanup is enabled
- * and hashmap exists, else leaks it
- * Return value: freed map or not */
-static bool paging_delete_and_free_map_entry(volatile void* map, uint16_t entry) {
-    paging_clear_map_entry(map, entry);
-
-    if (paging_state.initialized_refcount_map) {
-        uintptr_t p_map = paging_state.ops.p_ptr((void*)map);
-        paging_refcount_decrement(p_map); 
-
-        if (paging_refcount_check_map_empty(p_map)) {
-            paging_free_map(map);
-            paging_refcount_destroy(p_map);
-            return true;
-        } else
-            return false;
-    } else
-        return false;
-}
-
-/* Hashmap allocate and free wrapper functions for power of 2 blocks */
-static inline void* hashmap_buffer_allocate_pow2(uint64_t size) {
-    return paging_state.ops.allocate_block(63-__builtin_clzll(PAGE_COUNT_4K_IN_LEN(size)));
-}
-
-static inline void hashmap_buffer_free(void* ptr) {
-    return paging_state.ops.free_block(ptr);
-}
-
 /* Initialize allocator operations, this is generalized to handle anything from basic
- * virtual memory at boot to full kernel management 
- *
- * Cleanup can only be enabled if block allocate and free functions are
- * supplied. These are required for hashmap, and without them we cannot free many
- * pages we allocate and leak intentionally. This option exists to handle bootstrap
- * situation. */
-int paging_initialize_allocator(struct paging_ops ops) {
-    paging_state.ops = ops;
-
-    /* If cleanup is enabled, initialize a new hashmap */
-    if (ops.cleanup_enabled) {
-        struct hashtb_ops h_ops;
-        h_ops.hashing_algorithm = hash_multiplicative;
-        h_ops.buffer_allocate_pow2 = hashmap_buffer_allocate_pow2;
-        h_ops.buffer_free = hashmap_buffer_free;
-
-        /* Initial block capacity is 1 4K page */
-        if (hashtb_initialize(&paging_state.refcount_map, PAGE_4K, h_ops))
-            return 1;
-        paging_state.initialized_refcount_map = true;
-    } else
-        paging_state.initialized_refcount_map = false;
-
-    return 0;
-}
-
-void paging_uninitialize_allocator() {
-    /* Free hashmap if it was allocated */
-    if (paging_state.ops.cleanup_enabled) {
-        hashtb_free(&paging_state.refcount_map);
-    }
+ * virtual memory at boot to full kernel management */
+void paging_initialize_allocator(struct paging_ops ops) {
+    paging_state.ops = ops; 
 }
 
 volatile void* paging_new_pml4() {
@@ -243,7 +117,6 @@ volatile void* paging_new_pml4() {
     if (ptr == NULL) return NULL;
 
     paging_initialize_map(ptr);
-
     return ptr;
 }
 
@@ -279,11 +152,11 @@ int paging_map(uint64_t v_addr, uintptr_t p_addr, enum PAGE_SIZE size, uint32_t 
     volatile void* pt = NULL;
     volatile void* pd = NULL;
     volatile void* pdpt = NULL;
-    
+   
     for (uint32_t i=0; i<count; i++) {
         /* PML4E decoding */ 
         if (!paging_check_map_entry_present(paging_state.pml4, pml4e)) {
-            volatile void* map = paging_create_map_entry(paging_state.pml4, false);
+            volatile void* map = paging_create_map_entry();
             if (map == NULL) 
                 return 9;
 
@@ -303,15 +176,10 @@ int paging_map(uint64_t v_addr, uintptr_t p_addr, enum PAGE_SIZE size, uint32_t 
 
             paging_write_map_entry(pdpt, pdpte, p_addr, SET_PAGESIZE, PDPT_1G_PAGE_MASK);
 
-            if (prevMap != NULL) {
-                if (prevPS == 0) {
-                    /* A map exists here that has been unlinked after overwrite,
-                    * free it recursively */
-                    paging_free_map_recursive(prevMap, PAGING_FREE_PD_DEPTH);
-                }
-            } else if (paging_state.initialized_refcount_map) {
-                /* If previous map was not present, increment refcount */
-                paging_refcount_increment(paging_state.ops.p_ptr((void*)pdpt));
+            if (prevMap != NULL && prevPS == 0) {
+                /* A map exists here that has been unlinked after overwrite,
+                 * free it recursively */
+                paging_free_map_recursive(prevMap, PAGING_FREE_PDPTE_DEPTH);
             }
 
             p_addr += PAGE_1G;
@@ -335,7 +203,7 @@ int paging_map(uint64_t v_addr, uintptr_t p_addr, enum PAGE_SIZE size, uint32_t 
         }
 
         if (!found) {
-            volatile void* map = paging_create_map_entry(pdpt, true);
+            volatile void* map = paging_create_map_entry();
             if (map == NULL) 
                 return 9;
 
@@ -349,15 +217,10 @@ int paging_map(uint64_t v_addr, uintptr_t p_addr, enum PAGE_SIZE size, uint32_t 
             volatile void* prevMap = (volatile void*)paging_state.ops.v_ptr(paging_read_map_entry(\
                                         pd, pde, &prevPS));
             paging_write_map_entry(pd, pde, p_addr, SET_PAGESIZE, PDE_2M_PAGE_MASK);
-            if (prevMap != NULL) {
-                if (prevPS == 0) {
-                    /* A map exists here that has been unlinked after overwrite,
-                    * free it recursively */
-                    paging_free_map_recursive(prevMap, PAGING_FREE_PT_DEPTH);
-                }
-            } else if (paging_state.initialized_refcount_map) {
-                /* If previous map was not present, increment refcount */
-                paging_refcount_increment(paging_state.ops.p_ptr((void*)pd));
+            if (prevMap != NULL && prevPS == 0) {
+                /* A map exists here that has been unlinked after overwrite,
+                 * free it recursively */
+                paging_free_map_recursive(prevMap, PAGING_FREE_PDE_DEPTH);
             }
 
             p_addr += PAGE_2M;
@@ -381,7 +244,7 @@ int paging_map(uint64_t v_addr, uintptr_t p_addr, enum PAGE_SIZE size, uint32_t 
         }
 
         if (!found) {
-            volatile void* map = paging_create_map_entry(pd, true);
+            volatile void* map = paging_create_map_entry();
             if (map == NULL) 
                 return 9;
 
@@ -392,9 +255,7 @@ int paging_map(uint64_t v_addr, uintptr_t p_addr, enum PAGE_SIZE size, uint32_t 
         /* PTE write (For 4K pages) */
         paging_write_map_entry(pt, pte, p_addr, NOSET_PAGESIZE, NO_PAGE_MASK); 
 
-        if (paging_state.initialized_refcount_map)
-            paging_refcount_increment(paging_state.ops.p_ptr((void*)pt));
-
+        //vga_print("1\n");
         if ((p_addr + PAGE_4K) < p_addr) {
             vga_print_color("Physical address overflow while mapping\n", VGA_COLOR_RED);
             return 2;
@@ -441,10 +302,6 @@ int paging_unmap(uint64_t v_addr, enum PAGE_SIZE size, uint32_t count) {
     volatile void* pdpt = NULL;
 
     for (uint32_t i=0; i<count; i++) {
-        bool destroyed_pdpt = false;
-        bool destroyed_pd = false;
-        bool destroyed_pt = false;
-
         /* PML4E decoding */
         if (!paging_check_map_entry_present(paging_state.pml4, pml4e))
             return 1;
@@ -459,7 +316,7 @@ int paging_unmap(uint64_t v_addr, enum PAGE_SIZE size, uint32_t count) {
         if (size == PAGE_1G) {
             if (PS == 0) return 9;
             /* Clear entry */
-            destroyed_pdpt = paging_delete_and_free_map_entry(pdpt, pdpte);
+            paging_clear_map_entry(pdpt, pdpte);
 
             pdpte += 1;
             goto pdpte_check;
@@ -472,46 +329,23 @@ int paging_unmap(uint64_t v_addr, enum PAGE_SIZE size, uint32_t count) {
         if (size == PAGE_2M) {
             if (PS == 0) return 8;
             /* Clear entry */
-            destroyed_pd = paging_delete_and_free_map_entry(pd, pde);
+            paging_clear_map_entry(pd, pde);
 
             pde += 1;
             goto pde_check;
         }
 
-        destroyed_pt = paging_delete_and_free_map_entry(pt, pte);
+        paging_clear_map_entry(pt, pte);
         pte += 1;
         /* Handle overflow into next maps */
-        if (destroyed_pt) {
-            if (i<count-1) {
-                vga_print_color("PT destroyed but unmap requests next entry\n", VGA_COLOR_RED);
-                return 7;
-            }
-            destroyed_pd = paging_delete_and_free_map_entry(pd, pde);
-        }
         if (pte == MAP_ENTRY_COUNT) {
             pte = 0;
             pde += 1;
 pde_check:
-
-            if (destroyed_pd) {
-                if (size==PAGE_2M && i<count-1) {
-                    vga_print_color("PD destroyed but unmap requests next entry\n", VGA_COLOR_RED);
-                    return 6;
-                }
-                destroyed_pdpt = paging_delete_and_free_map_entry(pdpt, pdpte);
-            }
             if (pde == MAP_ENTRY_COUNT) {
                 pde = 0;
                 pdpte += 1;
 pdpte_check:
-
-                if (destroyed_pdpt) {
-                    if (size==PAGE_1G && i<count-1) {
-                        vga_print_color("PDPT destroyed but unmap requests next entry\n", VGA_COLOR_RED);
-                        return 5;
-                    }
-                    paging_clear_map_entry(paging_state.pml4, pml4e);
-                }
                 if (pdpte == MAP_ENTRY_COUNT) {
                     pdpte = 0;
                     pml4e += 1;
@@ -519,24 +353,7 @@ pdpte_check:
                         vga_print_color("Virtual address overflow while unmapping\n", VGA_COLOR_RED);
                         return 4;
                     }
-                } 
-            } else if (destroyed_pdpt) {
-destroyed_pdpt_jmp:
-                if (size==PAGE_1G && i<count-1) {
-                    vga_print_color("PDPT destroyed but unmap requests next entry\n", VGA_COLOR_RED);
-                    return 5;
                 }
-                paging_clear_map_entry(paging_state.pml4, pml4e);
-            }
-        } else if (destroyed_pd) {
-            if (size==PAGE_2M && i<count-1) {
-                vga_print_color("PD destroyed but unmap requests next entry\n", VGA_COLOR_RED);
-                return 6;
-            }
-            destroyed_pdpt = paging_delete_and_free_map_entry(pdpt, pdpte);
-
-            if (destroyed_pdpt) {
-                goto destroyed_pdpt_jmp;
             }
         }
     }

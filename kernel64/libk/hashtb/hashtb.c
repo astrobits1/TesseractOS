@@ -1,4 +1,5 @@
 #include <libk/hashtb.h>
+#include <common/drivers/vga/vga.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -84,7 +85,7 @@ static void hashtb_rehash(struct hashtb* tb, struct bucket* old_buffer) {
     }
 }
 
-int hashtb_initialize(struct hashtb* tb, void* buffer, uint64_t buffer_size, struct hashtb_ops ops) {
+int hashtb_initialize(struct hashtb* tb, uint64_t buffer_size, struct hashtb_ops ops) {
     if ((buffer_size&(buffer_size-1)) != 0) {
 //        printf("Buffer size must be a power of 2\n");
         return 1;
@@ -93,6 +94,11 @@ int hashtb_initialize(struct hashtb* tb, void* buffer, uint64_t buffer_size, str
 //        printf("Buffer is too small\n");
         return 2;
     }
+
+    void* buffer = ops.buffer_allocate_pow2(buffer_size);
+    if (buffer == NULL)
+        return 3;
+
     tb->bucket_list = buffer;
     tb->list_size = buffer_size;
     /* sizeof(struct bucket) must strictly be a power of 2 */
@@ -105,6 +111,12 @@ int hashtb_initialize(struct hashtb* tb, void* buffer, uint64_t buffer_size, str
     hashtb_initialize_bucket_list(tb);
 
     return 0;
+}
+
+void hashtb_free(struct hashtb* tb) {
+    /* Free buffer */
+    if (tb->bucket_list != NULL)
+        tb->ops.buffer_free(tb->bucket_list);
 }
 
 int hashtb_insert(struct hashtb* tb, uint64_t key, uint64_t value) {
@@ -158,7 +170,7 @@ int hashtb_insert(struct hashtb* tb, uint64_t key, uint64_t value) {
     /* Check load factor and trigger rehashing if necessary */
     double load_factor = ((double)tb->entry_count+tb->tombstone_count)/tb->bucket_count;
     if (load_factor > HASHTB_THRESHOLD_LF) {
-        struct bucket* new_buffer = tb->ops.buffer_allocate_double(tb->bucket_list, tb->list_size);
+        struct bucket* new_buffer = tb->ops.buffer_allocate_pow2(tb->list_size<<1);
         if (new_buffer == NULL)
             return 2;
 

@@ -2,8 +2,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <kernel64/memory/bump.h>
-#include <kernel64/memory/paging.h>
 #include <common/drivers/vga/vga.h>
+#include <boot32/paging.h>
 #include <boot32/boot.h>
 #include <boot32/gdt.h>
 #include <boot32/idt.h>
@@ -108,7 +108,13 @@ void boot_main(void* mb2_bootinfo) {
     /* bump_allocate/free_page can now be used */
 
     /* Initialize allocator for paging */
-    paging_initialize_allocator(bump_allocate_page, bump_free_page, bump_p_ptr, bump_v_ptr); 
+    struct paging_ops pg_ops;
+    pg_ops.allocate_page = bump_allocate_page;
+    pg_ops.free_page = bump_free_page;
+    pg_ops.p_ptr = bump_p_ptr;
+    pg_ops.v_ptr = bump_v_ptr;
+
+    paging_initialize_allocator(pg_ops); 
     /* Paging API can be used before even enabling paging,
      * because of the presence of identity map by default */
 

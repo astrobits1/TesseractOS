@@ -34,7 +34,7 @@ _Static_assert((sizeof(struct bucket)&(sizeof(struct bucket)-1)) == 0, \
 /* Configurable functions */
 struct hashtb_ops {
     uint64_t (*hashing_algorithm)(uint64_t key);
-    void* (*buffer_allocate_double)(void*, uint64_t);
+    void* (*buffer_allocate_pow2)(uint64_t);
     void (*buffer_free)(void*);
 };
     
@@ -50,7 +50,8 @@ struct hashtb {
     struct hashtb_ops ops;
 };
 
-int hashtb_initialize(struct hashtb* tb, void* buffer, uint64_t buffer_size, struct hashtb_ops ops);
+int hashtb_initialize(struct hashtb* tb, uint64_t buffer_size, struct hashtb_ops ops);
+void hashtb_free(struct hashtb* tb);
 int hashtb_insert(struct hashtb* tb, uint64_t key, uint64_t value);
 int hashtb_read(struct hashtb* tb, uint64_t key, uint64_t* _value);
 int hashtb_remove(struct hashtb* tb, uint64_t key);

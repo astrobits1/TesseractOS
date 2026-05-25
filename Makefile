@@ -42,7 +42,7 @@ LDFLAGS_LIBK = rcs
 #BOOT32_C_SRCS := $(wildcard boot32/*.c)
 #BOOT32_S_SRCS := $(wildcard boot32/*.s)
 
-BOOT32_BORROW_C_SRCS := kernel64/memory/bump.c kernel64/memory/paging.c
+BOOT32_BORROW_C_SRCS := kernel64/memory/bump.c
 
 BOOT32_C_SRCS := $(shell find boot32 -name "*.c")
 BOOT32_S_SRCS := $(shell find boot32 -name "*.s")

@@ -49,8 +49,17 @@ void kernel_setup(struct bootinfo* info) {
     bump_initialize(bottom, top, v_base);
     /* bump allocator can be supplied to paging API now */
 
-    /* Initialize allocator for paging  */
-    paging_initialize_allocator(bump_allocate_page, bump_free_page, bump_p_ptr, bump_v_ptr);
+    /* Initialize allocator for paging, no cleanup enabled */
+    struct paging_ops pg_ops1;
+    pg_ops1.allocate_page = bump_allocate_page;
+    pg_ops1.free_page = bump_free_page;
+    pg_ops1.p_ptr = bump_p_ptr;
+    pg_ops1.v_ptr = bump_v_ptr;
+
+    pg_ops1.cleanup_enabled = false;
+    pg_ops1.allocate_block = NULL;
+    pg_ops1.free_block = NULL;
+    paging_initialize_allocator(pg_ops1);
     /* Paging API can be used now */
 
     /* Get the already loaded PML4 and load it in our paging manager */
@@ -64,11 +73,29 @@ void kernel_setup(struct bootinfo* info) {
     int s = pmm_initialize((void*)info->map_entries, info->map_entry_count, \
             top+1, STATE_PMM_MAX_P_ADDR, STATE_V_PMM_BASE);
     if (s > 0) {
-        vga_print_color("Fatal PMM error during initialization\n", VGA_COLOR_RED);
+        vga_print_color("Fatal PMM error during initialization\n", VGA_COLOR_BROWN);
         goto panic;
     }
     
-    /* PMM is initialized */
+    /* PMM is initialized
+     * Reinitialize paging API, this time configured to use PMM as memory supplier */
+    struct paging_ops pg_ops2;
+    pg_ops2.allocate_page = pmm_allocate_page;
+    pg_ops2.free_page = pmm_free_page;
+    pg_ops2.p_ptr = pmm_p_ptr;
+    pg_ops2.v_ptr = pmm_v_ptr;
+    
+    pg_ops2.cleanup_enabled = true;
+    pg_ops2.allocate_block = pmm_allocate_block;
+    pg_ops2.free_block = pmm_free_block;
+    
+    paging_uninitialize_allocator();
+    if (paging_initialize_allocator(pg_ops2)) {
+        vga_print_color("Fatal Paging error during initialization\n", VGA_COLOR_BROWN);
+        goto panic;
+    }
+
+    return;
 panic:
     kernel_panic();
 }
@@ -80,11 +107,20 @@ void kernel_main(struct bootinfo* info) {
     vga_clear();
 
     vga_print_color("Entered long mode\n", VGA_COLOR_LIGHT_MAGENTA);
-    vga_print("Welcome to Tesseract OS\n\n");
-
-    bootinfo_print_memory_map(info);
-
+    
     kernel_setup(info);
 
+    vga_print("\n");
+    vga_print("Welcome to\n");
+    vga_print_color("|''||''|                       ", VGA_COLOR_LIGHT_CYAN);
+    vga_print_color(" ..|''||    .|'''.|  \n", VGA_COLOR_LIGHT_BROWN);
+    vga_print_color("   ||      ....   ....   ....  ", VGA_COLOR_LIGHT_CYAN);
+    vga_print_color(".|'    ||   ||..  '  \n", VGA_COLOR_LIGHT_BROWN);
+    vga_print_color("   ||    .|...|| ||. '  ||. '  ", VGA_COLOR_LIGHT_CYAN);
+    vga_print_color("||      ||   ''|||.  \n", VGA_COLOR_LIGHT_BROWN);
+    vga_print_color("   ||    ||      . '|.. . '|.. ", VGA_COLOR_LIGHT_CYAN);
+    vga_print_color("'|.     || .     '|| \n", VGA_COLOR_LIGHT_BROWN);
+    vga_print_color("  .||.    '|...' |'..|' |'..|' ", VGA_COLOR_LIGHT_CYAN);
+    vga_print_color(" ''|...|'  |'....|'  \n", VGA_COLOR_LIGHT_BROWN);
     lock();
 }

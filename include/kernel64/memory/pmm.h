@@ -41,12 +41,8 @@ void* pmm_allocate_block(uint8_t order);
 void pmm_free_block(void* block);
 
 /* Wrappers for handling the case of a page, for the paging API */
-inline void* pmm_allocate_page() {
-    return pmm_allocate_block(0);
-}
-inline void pmm_free_page(void* page) {
-    pmm_free_block(page);
-}
+void* pmm_allocate_page();
+void pmm_free_page(void* page);
 
 uintptr_t pmm_p_ptr(void* v_ptr);
 void* pmm_v_ptr(uintptr_t p_ptr);
