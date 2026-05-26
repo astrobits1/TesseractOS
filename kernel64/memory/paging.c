@@ -467,8 +467,8 @@ int paging_unmap(uint64_t v_addr, enum PAGE_SIZE size, uint32_t count) {
     bool invl_singular;
     bool to_tlb_flush = false;
     /* Singular invalidation vs full flush threshold
-     * >16 4K/2M/1G pages */
-    if (count > 16)
+     * >THRESH 4K/2M/1G pages */
+    if (count > TLB_SINGULAR_INV_THRESH)
         invl_singular = false;
     else
         invl_singular = true;

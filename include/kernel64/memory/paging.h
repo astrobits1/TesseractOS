@@ -52,6 +52,10 @@ enum PAGING_FREE_DEPTH {
 #define SET_PAGESIZE 1
 #define NOSET_PAGESIZE 0
 
+/* If unmap page count crosses singular TLB invalidation threshold,
+ * a full TLB flush (CR3 reload) is done instead */
+#define TLB_SINGULAR_INV_THRESH 16
+
 struct paging_ops {
     void* (*allocate_page)();
     void (*free_page)(void*);
