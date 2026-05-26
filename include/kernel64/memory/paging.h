@@ -78,4 +78,9 @@ int paging_map(uint64_t v_addr, uintptr_t p_addr, enum PAGE_SIZE size, uint32_t 
 int paging_unmap(uint64_t v_addr, enum PAGE_SIZE size, uint32_t count);
 int paging_set_map_best_fit(uint64_t v_addr, uint64_t p_addr, uint64_t length, enum PAGE_SIZE max_page_size, bool map);
 
+/* paging_as.s
+ * TLB Invalidation */
+void tlb_invalidate(void* page);
+void tlb_flush();
+
 #endif

@@ -262,6 +262,12 @@ void paging_reload_pml4(void(*reload)(volatile void* pml4)) {
     reload(paging_state.pml4);
 }
 
+static inline uint64_t map_indices_to_v_addr(uint16_t pte, uint16_t pde, uint16_t pdpte, uint16_t pml4e) {
+    /* Translation from map indices to virtual address, with bit 63-48 extension */
+    uint64_t v_addr = ((uint64_t)pte<<12)|((uint64_t)pde<<21)|((uint64_t)pdpte<<30)|((uint64_t)pml4e<<39);
+    return (uint64_t)(((int64_t)(v_addr<<16))>>16);
+}
+
 /* Linear map virtual address to given physical address in PAGE_SIZE sized page blocks,
  * count represents no. of blocks starting from physical and mapped to virtual 1:1
  *
@@ -306,8 +312,13 @@ int paging_map(uint64_t v_addr, uintptr_t p_addr, enum PAGE_SIZE size, uint32_t 
             if (prevMap != NULL) {
                 if (prevPS == 0) {
                     /* A map exists here that has been unlinked after overwrite,
-                    * free it recursively */
+                    * free it recursively 
+                    * Flush TLB as many entries may have changed */
                     paging_free_map_recursive(prevMap, PAGING_FREE_PD_DEPTH);
+                    tlb_flush();
+                } else {
+                    /* 1G hugepage was unmapped, invalidate */
+                    tlb_invalidate((void*)map_indices_to_v_addr(0, 0, pdpte, pml4e));
                 }
             } else if (paging_state.initialized_refcount_map) {
                 /* If previous map was not present, increment refcount */
@@ -352,8 +363,13 @@ int paging_map(uint64_t v_addr, uintptr_t p_addr, enum PAGE_SIZE size, uint32_t 
             if (prevMap != NULL) {
                 if (prevPS == 0) {
                     /* A map exists here that has been unlinked after overwrite,
-                    * free it recursively */
+                    * free it recursively
+                    * Flush TLB as many entries may have changed */
                     paging_free_map_recursive(prevMap, PAGING_FREE_PT_DEPTH);
+                    tlb_flush();
+                } else {
+                    /* Invalidate previous 2M hugepage */
+                    tlb_invalidate((void*)map_indices_to_v_addr(0, pde, pdpte, pml4e));
                 }
             } else if (paging_state.initialized_refcount_map) {
                 /* If previous map was not present, increment refcount */
@@ -390,10 +406,17 @@ int paging_map(uint64_t v_addr, uintptr_t p_addr, enum PAGE_SIZE size, uint32_t 
         }
  
         /* PTE write (For 4K pages) */
-        paging_write_map_entry(pt, pte, p_addr, NOSET_PAGESIZE, NO_PAGE_MASK); 
+        paging_write_map_entry(pt, pte, p_addr, NOSET_PAGESIZE, NO_PAGE_MASK);
 
-        if (paging_state.initialized_refcount_map)
-            paging_refcount_increment(paging_state.ops.p_ptr((void*)pt));
+        if (!paging_check_map_entry_present(pt, pte)) {
+            /* Increment refcount if entry not present before */
+            if (paging_state.initialized_refcount_map)
+                paging_refcount_increment(paging_state.ops.p_ptr((void*)pt));
+        } else {
+            /* Overwriting an entry, dont increment refcount and invalidate it
+             * We choose to do singular invalidation here */
+            tlb_invalidate((void*)map_indices_to_v_addr(pte, pde, pdpte, pml4e));
+        }
 
         if ((p_addr + PAGE_4K) < p_addr) {
             vga_print_color("Physical address overflow while mapping\n", VGA_COLOR_RED);
@@ -440,6 +463,16 @@ int paging_unmap(uint64_t v_addr, enum PAGE_SIZE size, uint32_t count) {
     volatile void* pd = NULL;
     volatile void* pdpt = NULL;
 
+    /* TLB */
+    bool invl_singular;
+    bool to_tlb_flush = false;
+    /* Singular invalidation vs full flush threshold
+     * >16 4K/2M/1G pages */
+    if (count > 16)
+        invl_singular = false;
+    else
+        invl_singular = true;
+
     for (uint32_t i=0; i<count; i++) {
         bool destroyed_pdpt = false;
         bool destroyed_pd = false;
@@ -460,7 +493,10 @@ int paging_unmap(uint64_t v_addr, enum PAGE_SIZE size, uint32_t count) {
             if (PS == 0) return 9;
             /* Clear entry */
             destroyed_pdpt = paging_delete_and_free_map_entry(pdpt, pdpte);
-
+            if (invl_singular)
+                tlb_invalidate((void*)map_indices_to_v_addr(0, 0, pdpte, pml4e));
+            else
+                to_tlb_flush = true;
             pdpte += 1;
             goto pdpte_check;
         }
@@ -473,12 +509,19 @@ int paging_unmap(uint64_t v_addr, enum PAGE_SIZE size, uint32_t count) {
             if (PS == 0) return 8;
             /* Clear entry */
             destroyed_pd = paging_delete_and_free_map_entry(pd, pde);
-
+            if (invl_singular)
+                tlb_invalidate((void*)map_indices_to_v_addr(0, pde, pdpte, pml4e));
+            else
+                to_tlb_flush = true;
             pde += 1;
             goto pde_check;
         }
 
         destroyed_pt = paging_delete_and_free_map_entry(pt, pte);
+        if (invl_singular)
+            tlb_invalidate((void*)map_indices_to_v_addr(pte, pde, pdpte, pml4e));
+        else
+            to_tlb_flush = true;
         pte += 1;
         /* Handle overflow into next maps */
         if (destroyed_pt) {
@@ -541,6 +584,10 @@ destroyed_pdpt_jmp:
         }
     }
 
+    /* If we had chosen to do a full flush instead of singular
+     * invalidation, do it now */
+    if (!invl_singular && to_tlb_flush)
+        tlb_flush();
     return 0;
 }
 
