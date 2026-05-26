@@ -268,6 +268,8 @@ static inline uint64_t map_indices_to_v_addr(uint16_t pte, uint16_t pde, uint16_
     return (uint64_t)(((int64_t)(v_addr<<16))>>16);
 }
 
+/* It is important to disable interrupts when doing paging map/unmap operations */
+
 /* Linear map virtual address to given physical address in PAGE_SIZE sized page blocks,
  * count represents no. of blocks starting from physical and mapped to virtual 1:1
  *

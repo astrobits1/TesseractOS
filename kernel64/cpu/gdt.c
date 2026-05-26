@@ -28,13 +28,13 @@ void gdt_initialise() {
     gdt_write_entry(1, 0, 0xFFFFF, 0x9A, 0xA); 
 
     /* Kernel ring 0 data segment (flat) */
-    gdt_write_entry(2, 0, 0xFFFFF, 0x92, 0xC);
+    gdt_write_entry(2, 0, 0xFFFFF, 0x92, 0xA);
 
     /* User ring 3 code segment (flat) */
     gdt_write_entry(3, 0, 0xFFFFF, 0xFA, 0xA);
 
     /* User ring 3 data segment (flat) */
-    gdt_write_entry(4, 0, 0xFFFFF, 0xF2, 0xC);
+    gdt_write_entry(4, 0, 0xFFFFF, 0xF2, 0xA);
 
     /* Setup TSS */
 

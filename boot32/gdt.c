@@ -44,6 +44,9 @@ void gdt_initialise() {
 void gdt_set_long_mode() {
     /* Enable long mode bit, disable DB size flag *
      * base and limit are ignored in long mode */
+
     /* Kernel ring 0 code */
     gdt_write_entry(1, 0, 0xFFFFF, 0x9A, 0xA);
+    /* Kernel ring 0 data */
+    gdt_write_entry(2, 0, 0xFFFFF, 0x92, 0xA);
 }
