@@ -408,13 +408,13 @@ int paging_map(uint64_t v_addr, uintptr_t p_addr, enum PAGE_SIZE size, uint32_t 
         }
  
         /* PTE write (For 4K pages) */
-        paging_write_map_entry(pt, pte, p_addr, NOSET_PAGESIZE, NO_PAGE_MASK);
-
         if (!paging_check_map_entry_present(pt, pte)) {
+            paging_write_map_entry(pt, pte, p_addr, NOSET_PAGESIZE, NO_PAGE_MASK);
             /* Increment refcount if entry not present before */
             if (paging_state.initialized_refcount_map)
                 paging_refcount_increment(paging_state.ops.p_ptr((void*)pt));
         } else {
+            paging_write_map_entry(pt, pte, p_addr, NOSET_PAGESIZE, NO_PAGE_MASK);
             /* Overwriting an entry, dont increment refcount and invalidate it
              * We choose to do singular invalidation here */
             tlb_invalidate((void*)map_indices_to_v_addr(pte, pde, pdpte, pml4e));
