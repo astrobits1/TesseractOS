@@ -717,12 +717,12 @@ void pmm_free_block(void* block) {
 
 uintptr_t pmm_p_ptr(void* v_ptr) {
     if (v_ptr == NULL) return 0;
-    return (~pmm_state.mirror_base)&(uint64_t)v_ptr;
+    return (uint64_t)v_ptr-pmm_state.mirror_base;
 }
 
 void* pmm_v_ptr(uintptr_t p_ptr) {
     if (p_ptr == 0) return NULL;
-    return (void*)(pmm_state.mirror_base|(uint64_t)p_ptr);
+    return (void*)(pmm_state.mirror_base+(uint64_t)p_ptr);
 }
 
 void* pmm_allocate_page() {
