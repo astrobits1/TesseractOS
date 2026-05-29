@@ -89,8 +89,9 @@ static void pmm_page_meta_print(struct pmm_page_meta* meta) {
     vga_print("\n");
 }
 
-/* Page meta/Zone meta linear lookups are expensive and mainly only exist for bootstrap
- * when memory is being set up and setting up hash tables and other strategies is impractical.
+/* Page meta/Zone meta binary lookups gives O(logN) complexity which is suitable
+ * for zone metadata lookups for wildcard addresses. Zone metadata is initialized in
+ * order of memory map zones, which gives us a sorted list to work with.
  * 
  * In general, full physical address lookups should only be done in case of wildcard addresses. 
  * Once that is done, for any derived address read/writes, the base can be used with offsets 
@@ -98,11 +99,21 @@ static void pmm_page_meta_print(struct pmm_page_meta* meta) {
 
 /* Given a physical page address, look up its zone if its usable
  * otherwise return NULL */
-static struct pmm_zone_meta* pmm_zone_meta_linear_lookup(uintptr_t p_addr) {
-    for (uint32_t i=0; i<pmm_state.memory_map_count; i++) {
+/* Binary search */
+static struct pmm_zone_meta* pmm_zone_meta_binary_lookup(uintptr_t p_addr) {
+    uint32_t start = 0;
+    uint32_t end = pmm_state.memory_map_count-1;
+
+    /* start overflow is handled by while condition
+     * and treated at out of bounds */
+    while (start <= end) {
+        uint32_t i=start+(end-start)/2;
         struct memory_map_entry entry = pmm_state.memory_map[i];
 
-        if (p_addr >= entry.addr && p_addr < entry.addr+entry.length) {
+        bool gte_start = p_addr >= entry.addr;
+        bool lt_end = p_addr < entry.addr+entry.length;
+
+        if (gte_start && lt_end) {
             /* Get corresponding zone metadata once memory map region
              * has been identified */
             struct pmm_zone_meta* base = pmm_state.zone_list_bottom;
@@ -112,15 +123,24 @@ static struct pmm_zone_meta* pmm_zone_meta_linear_lookup(uintptr_t p_addr) {
                 return NULL;
 
             return meta;
+        } else if (!gte_start) {
+            /* Trim mid and after mid */
+            /* Underflow */
+            if (i == 0)
+                return NULL;
+            end = i-1;
+        } else if (!lt_end) {
+            /* Trim mid and before mid */
+            start = i+1;
         }
     }
 
-    /* It is unmapped */
+    /* Out of bounds/Not found */
     return NULL;
 }
 
-static struct pmm_page_meta* pmm_page_meta_linear_lookup(uintptr_t p_addr) {
-    struct pmm_zone_meta* zone_meta = pmm_zone_meta_linear_lookup(p_addr);
+static struct pmm_page_meta* pmm_page_meta_binary_lookup(uintptr_t p_addr) {
+    struct pmm_zone_meta* zone_meta = pmm_zone_meta_binary_lookup(p_addr);
     /* Check for zone validity */
     if (zone_meta == NULL) 
         return NULL;
@@ -133,9 +153,9 @@ static struct pmm_page_meta* pmm_page_meta_linear_lookup(uintptr_t p_addr) {
     return page_meta;
 }
 
-static int pmm_page_meta_linear_lookup_write(uintptr_t p_addr, uint8_t state, uint8_t order) {
+static int pmm_page_meta_binary_lookup_write(uintptr_t p_addr, uint8_t state, uint8_t order) {
     /* Lookup page metadata and write to it */
-    struct pmm_page_meta* page_meta = pmm_page_meta_linear_lookup(p_addr);
+    struct pmm_page_meta* page_meta = pmm_page_meta_binary_lookup(p_addr);
     if (page_meta == NULL)
         return 1;
     page_meta->order = order;
@@ -392,7 +412,7 @@ static int pmm_allocate_lists(uintptr_t p_zone_list_base, uint32_t zone_count, u
  
     /* Zone and page lists have been written and initialized,
      * we can now mark the pages occupied by the lists themselves as RESERVED */ 
-    struct pmm_zone_meta* reserved_zone_meta = pmm_zone_meta_linear_lookup(\
+    struct pmm_zone_meta* reserved_zone_meta = pmm_zone_meta_binary_lookup(\
             pmm_p_ptr(pmm_state.zone_list_bottom));
     uint64_t base_page_index = PAGE_COUNT_4K_CONTAINING_LEN( \
             pmm_p_ptr(pmm_state.zone_list_bottom)-reserved_zone_meta->zone_p_base);
@@ -552,7 +572,7 @@ static int pmm_initialize_zones() {
         void* next = pmm_state.free_lists[i];
 
         while (next != NULL) {
-            struct pmm_page_meta* meta = pmm_page_meta_linear_lookup(pmm_p_ptr(next));
+            struct pmm_page_meta* meta = pmm_page_meta_binary_lookup(pmm_p_ptr(next));
             pmm_page_meta_write(meta, 0, PMM_PAGE_FREE, i);
 
             /* For every page in top level block, set ancestor order
@@ -616,7 +636,7 @@ void* pmm_allocate_block(uint8_t order) {
     /* Check freelist of order for available block */
     if (pmm_state.free_lists[order] != NULL) {
         block = pmm_block_freelist_pop(order);
-        pmm_page_meta_linear_lookup_write(pmm_p_ptr(block), PMM_PAGE_ALLOCATED, order);
+        pmm_page_meta_binary_lookup_write(pmm_p_ptr(block), PMM_PAGE_ALLOCATED, order);
         pmm_state.page_count_allocated += page_count;
         pmm_state.page_count_free -= page_count;
 
@@ -641,7 +661,7 @@ void* pmm_allocate_block(uint8_t order) {
     if (block == NULL)
         return NULL;
 
-    struct pmm_page_meta* block_meta = pmm_page_meta_linear_lookup(pmm_p_ptr(block));
+    struct pmm_page_meta* block_meta = pmm_page_meta_binary_lookup(pmm_p_ptr(block));
     /* Closest higher order block has been found and popped
      * split recursively till we reach desired order.
      * 'block' will contain final block */ 
@@ -667,7 +687,7 @@ allocated:
 
 void pmm_free_block(void* block) {
     uintptr_t p_block = pmm_p_ptr(block);
-    struct pmm_page_meta* block_meta = pmm_page_meta_linear_lookup(p_block);
+    struct pmm_page_meta* block_meta = pmm_page_meta_binary_lookup(p_block);
 
     /* False free protection for protected and reserved regions,
      * also for already free blocks. However this doesnt protect against everything.
